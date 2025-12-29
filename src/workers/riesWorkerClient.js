@@ -13,13 +13,12 @@ const DEFAULT_RIES_OPTIONS = {
   // Only allow building blocks for:
   //  - pi (p)
   //  - sqrt (q) to build silver ratio (1 + sqrt(2))
-  //  - exp (E) and negate (n) to build your exponential factor
+  //  - exp (e) and negate (n) to build your exponential factor
   //  - arithmetic +, -, *, /, ^
   //  - digits needed (1,2,3,5,7)
   //
-  // NOTE: If your RIES build uses different letters for exp/neg,
-  // change them here.
-  onlyUseSymbols: "xpqEn+-*/^12357",
+  // IMPORTANT: exp is lowercase 'e' in this RIES build.
+  onlyUseSymbols: "xpqen+-*/^12357",
 
   // Optional extras you can enable if you want:
   // solveForX: true,
@@ -442,6 +441,10 @@ export function sendRiesRequest(targetValue, options = {}) {
 
   // Build args from merged options
   const args = buildArgs(mergedOptions);
+
+  // DEBUG: prove what we're sending to RIES
+  console.log("✅ mergedOptions:", mergedOptions);
+  console.log("✅ RIES args being sent:", args);
 
   return new Promise((resolve, reject) => {
     const id = msgId++;
