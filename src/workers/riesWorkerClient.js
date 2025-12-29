@@ -28,7 +28,9 @@ const DEFAULT_RIES_OPTIONS = {
 };
 
 // Constants
-const MAX_HEARTBEAT_SILENCE = 5000; // 5 seconds without heartbeat is considered failure
+const MAX_HEARTBEAT_SILENCE = 30000;
+console.log("✅ MAX_HEARTBEAT_SILENCE =", MAX_HEARTBEAT_SILENCE);
+
 const MEMORY_READINGS_MAX = 5; // Keep last 5 readings
 const MEMORY_GROWTH_THRESHOLD = 20; // 20% growth between readings is suspicious
 const HEARTBEAT_CHECK_INTERVAL = 1000; // Check heartbeat every second
