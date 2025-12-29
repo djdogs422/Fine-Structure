@@ -1,41 +1,27 @@
 // src/workers/riesWorkerClient.js
 console.log("✅✅✅ USING UPDATED riesWorkerClient.js FILE");
 
-
 // ======================
 // Defaults: "Your solver"
 // ======================
-// These defaults apply even if the UI passes no options.
-// Edit this one object to change your "house rules".
 const DEFAULT_RIES_OPTIONS = {
-  // Use x at most once per side (simpler equations)
+  // Use x at most once per side
   onlyOneSymbols: "x",
 
-  // Only allow building blocks for:
-  //  - pi (p)
-  //  - sqrt (q) to build silver ratio (1 + sqrt(2))
-  //  - exp (e) and negate (n) to build your exponential factor
-  //  - arithmetic +, -, *, /, ^
-  //  - digits needed (1,2,3,5,7)
-  //
-  // IMPORTANT: exp is lowercase 'e' in this RIES build.
+  // IMPORTANT: exp is lowercase 'e' in this RIES build
+  // Allowed building blocks:
+  // x (variable), p (pi), q (sqrt), e (exp), n (negate),
+  // + - * / ^, and digits 1 2 3 5 7
   onlyUseSymbols: "xpqen+-*/^12357",
-
-  // Optional extras you can enable if you want:
-  // solveForX: true,
-  // solutionType: "l", // etc.
-  // extraArgs: ["-l3"], // Search further
 };
 
 // Constants
-const MAX_HEARTBEAT_SILENCE = 30000;
-console.log("✅ MAX_HEARTBEAT_SILENCE =", MAX_HEARTBEAT_SILENCE);
-
-const MEMORY_READINGS_MAX = 5; // Keep last 5 readings
-const MEMORY_GROWTH_THRESHOLD = 20; // 20% growth between readings is suspicious
-const HEARTBEAT_CHECK_INTERVAL = 1000; // Check heartbeat every second
-const RETRY_DELAY = 100; // Regular retry delay
-const CRITICAL_RETRY_DELAY = 500; // Longer delay for critical errors
+const MAX_HEARTBEAT_SILENCE = 30000; // 30 seconds (much safer)
+const MEMORY_READINGS_MAX = 5;
+const MEMORY_GROWTH_THRESHOLD = 20;
+const HEARTBEAT_CHECK_INTERVAL = 1000;
+const RETRY_DELAY = 100;
+const CRITICAL_RETRY_DELAY = 500;
 
 // Memory error patterns to detect in global errors
 const MEMORY_ERROR_PATTERNS = [
@@ -54,75 +40,53 @@ let heartbeatWatchdog = null;
 let memoryReadings = [];
 
 /**
+ * Remove empty-string options that would accidentally override defaults.
+ */
+function normalizeOptions(options = {}) {
+  const cleaned = { ...(options || {}) };
+
+  for (const k of ["onlyUseSymbols", "onlyOneSymbols", "neverUseSymbols", "solutionType"]) {
+    if (typeof cleaned[k] === "string" && cleaned[k].trim() === "") {
+      delete cleaned[k];
+    }
+  }
+
+  return cleaned;
+}
+
+/**
  * Build the RIES command arguments from options.
- * Used both for the initial request and for retries, so behavior is identical.
  */
 function buildArgs(options = {}) {
   const args = [];
 
-  // Add never use symbols (-N)
-  if (options.neverUseSymbols) {
-    args.push(`-N${options.neverUseSymbols}`);
-  }
+  if (options.neverUseSymbols) args.push(`-N${options.neverUseSymbols}`);
+  if (options.onlyOneSymbols) args.push(`-O${options.onlyOneSymbols}`);
+  if (options.onlyUseSymbols) args.push(`-S${options.onlyUseSymbols}`);
+  if (options.solutionType) args.push(`-${options.solutionType}`);
+  if (options.solveForX) args.push("-s");
 
-  // Add only use once symbols (-O)
-  if (options.onlyOneSymbols) {
-    args.push(`-O${options.onlyOneSymbols}`);
-  }
-
-  // Add only use these symbols (-S)
-  if (options.onlyUseSymbols) {
-    args.push(`-S${options.onlyUseSymbols}`);
-  }
-
-  // Add solution type constraint if specified (e.g. -a, -c, -l, -r, -i)
-  if (options.solutionType) {
-    args.push(`-${options.solutionType}`);
-  }
-
-  // Add solve-for-x flag if enabled
-  if (options.solveForX) {
-    args.push("-s");
-  }
-
-  // Allow power-users to pass arbitrary extra flags (e.g. ["-l3"])
   if (Array.isArray(options.extraArgs)) {
     for (const a of options.extraArgs) {
-      if (typeof a === "string" && a.trim() !== "") {
-        args.push(a);
-      }
+      if (typeof a === "string" && a.trim() !== "") args.push(a);
     }
   }
 
-  // Always include default formatting
-  if (!args.some((arg) => arg.startsWith("-F"))) {
-    args.push("-F3");
-  }
-
+  if (!args.some((arg) => arg.startsWith("-F"))) args.push("-F3");
   return args;
 }
 
 /**
  * Log memory statistics if available
- * @param {string} label - Label for the log message
- * @returns {object|null} Memory stats object or null if not available
  */
 function logMemoryStats(label) {
   if (window.performance && window.performance.memory) {
-    const memUsed = Math.round(
-      window.performance.memory.usedJSHeapSize / (1024 * 1024)
-    );
-    const memTotal = Math.round(
-      window.performance.memory.totalJSHeapSize / (1024 * 1024)
-    );
-    const memLimit = Math.round(
-      window.performance.memory.jsHeapSizeLimit / (1024 * 1024)
-    );
+    const memUsed = Math.round(window.performance.memory.usedJSHeapSize / (1024 * 1024));
+    const memTotal = Math.round(window.performance.memory.totalJSHeapSize / (1024 * 1024));
+    const memLimit = Math.round(window.performance.memory.jsHeapSizeLimit / (1024 * 1024));
     const usagePercent = Math.round((memUsed / memTotal) * 100);
 
-    console.debug(
-      `📊 Memory ${label}: ${memUsed}MB/${memTotal}MB/${memLimit}MB (${usagePercent}% usage)`
-    );
+    console.debug(`📊 Memory ${label}: ${memUsed}MB/${memTotal}MB/${memLimit}MB (${usagePercent}% usage)`);
     return { used: memUsed, total: memTotal, limit: memLimit, percent: usagePercent };
   }
   return null;
@@ -135,49 +99,25 @@ function resetWorker() {
   console.warn("🔄 Resetting RIES worker due to potential memory issues");
   logMemoryStats("before reset");
 
-  // Clear the watchdog timer
-  if (heartbeatWatchdog) {
-    clearInterval(heartbeatWatchdog);
-    heartbeatWatchdog = null;
-    console.debug("🛑 Heartbeat watchdog cleared");
-  }
-
-  // Terminate the existing worker if it exists
   if (worker) {
     try {
-      console.debug("🔫 Terminating current worker");
       worker.terminate();
-      console.debug("✅ Worker terminated successfully");
     } catch (e) {
       console.error("❌ Failed to terminate worker:", e);
     }
     worker = null;
   }
 
-  // Force garbage collection if the browser supports it
-  if (window.gc) {
-    try {
-      console.debug("🧹 Attempting to force garbage collection");
-      window.gc();
-    } catch (e) {
-      console.debug("⚠️ Garbage collection not available");
-    }
-  }
-
-  console.debug("⏳ Creating new worker instance");
-
-  // Create a new worker
   worker = new Worker(new URL("./ries.worker.js", import.meta.url));
   setupWorkerHandlers();
+
+  // Restart watchdog after reset
+  startHeartbeatWatchdog();
   console.debug("✅ New worker created and handlers set up");
 }
 
 /**
  * Retry a calculation request
- * @param {number} id - The request ID
- * @param {object} cb - The callback object
- * @param {number} delay - Delay before retry in ms
- * @param {boolean} isCritical - Whether this is a critical error retry
  */
 function retryRequest(id, cb, delay = RETRY_DELAY, isCritical = false) {
   if (!cb.hasRetried) {
@@ -186,12 +126,7 @@ function retryRequest(id, cb, delay = RETRY_DELAY, isCritical = false) {
 
     setTimeout(() => {
       const args = buildArgs(cb.options || {});
-      worker.postMessage({
-        id,
-        targetValue: cb.targetValue,
-        args,
-        retry: true,
-      });
+      worker.postMessage({ id, targetValue: cb.targetValue, args, retry: true });
     }, delay);
   } else {
     console.warn(`❌ Already retried request ${id}, giving up`);
@@ -203,11 +138,6 @@ function retryRequest(id, cb, delay = RETRY_DELAY, isCritical = false) {
   }
 }
 
-/**
- * Process pending callbacks after a worker reset
- * @param {Map} pendingCallbacks - Map of pending callbacks
- * @param {boolean} isCritical - Whether this is a critical error situation
- */
 function processPendingCallbacks(pendingCallbacks, isCritical = false) {
   pendingCallbacks.forEach((cb, id) => {
     retryRequest(id, cb, isCritical ? CRITICAL_RETRY_DELAY : RETRY_DELAY, isCritical);
@@ -215,14 +145,12 @@ function processPendingCallbacks(pendingCallbacks, isCritical = false) {
 }
 
 /**
- * Set up event handlers for the worker
+ * Set up worker handlers
  */
 function setupWorkerHandlers() {
-  // Handle messages from the worker
   worker.onmessage = (event) => {
     const { id, result, error, memoryError, type, timestamp } = event.data;
 
-    // Handle heartbeat messages
     if (type === "heartbeat") {
       lastHeartbeatTime = timestamp;
       return;
@@ -232,12 +160,8 @@ function setupWorkerHandlers() {
     if (!cb) return;
 
     if (memoryError) {
-      console.log("📉 RIES calculation failed due to memory constraints, restarting worker...");
-
-      // If we get a memory error, restart the worker completely and retry
+      console.log("📉 RIES memory error, restarting worker and retrying...");
       resetWorker();
-
-      // After reset, retry the request
       retryRequest(id, cb);
     } else if (error) {
       cb.reject(new Error(error));
@@ -248,24 +172,17 @@ function setupWorkerHandlers() {
     }
   };
 
-  // Handle worker errors
   worker.onerror = (err) => {
     console.error("🔥 Worker error detected:", err);
-
-    // Reset the worker and get callbacks before reset
     const pendingCallbacks = new Map(callbacks);
     resetWorker();
-
-    // Process all pending callbacks
     processPendingCallbacks(pendingCallbacks);
   };
 
-  // Handle worker uncaught errors
   if (window.addEventListener) {
     window.addEventListener(
       "error",
       function (event) {
-        // Check if this is a memory error from the worker
         if (
           event &&
           event.message &&
@@ -274,19 +191,12 @@ function setupWorkerHandlers() {
           event.filename.includes("riesWorkerClient.js")
         ) {
           console.error(`🚨 Critical memory error detected: ${event.message}`);
-
-          // Get all pending callbacks before reset
           const pendingCallbacks = new Map(callbacks);
-
-          // Force a complete reset of the worker
           resetWorker();
-
-          // Process callbacks with critical error handling
           processPendingCallbacks(pendingCallbacks, true);
-
-          return true; // Prevent default error handling
+          return true;
         }
-        return false; // Let other errors propagate normally
+        return false;
       },
       true
     );
@@ -294,13 +204,10 @@ function setupWorkerHandlers() {
 }
 
 /**
- * Add a memory reading and check for concerning patterns
- * @returns {boolean} true if there's a concerning memory pattern
+ * Track memory usage trend (optional)
  */
 function trackMemoryUsage() {
-  if (!(window.performance && window.performance.memory)) {
-    return false; // Can't track without the API
-  }
+  if (!(window.performance && window.performance.memory)) return false;
 
   const currentMemory = {
     timestamp: Date.now(),
@@ -309,96 +216,54 @@ function trackMemoryUsage() {
     limit: window.performance.memory.jsHeapSizeLimit,
   };
 
-  // Add to readings and keep only the most recent ones
   memoryReadings.push(currentMemory);
-  if (memoryReadings.length > MEMORY_READINGS_MAX) {
-    memoryReadings.shift();
-  }
+  if (memoryReadings.length > MEMORY_READINGS_MAX) memoryReadings.shift();
+  if (memoryReadings.length < 2) return false;
 
-  // Need at least 2 readings to detect trends
-  if (memoryReadings.length < 2) {
-    return false;
-  }
+  const oldest = memoryReadings[0];
+  const newest = memoryReadings[memoryReadings.length - 1];
 
-  // Calculate memory growth rate
-  const oldestReading = memoryReadings[0];
-  const newestReading = memoryReadings[memoryReadings.length - 1];
+  const growthPercent = ((newest.used - oldest.used) / oldest.used) * 100;
+  const usagePercent = (newest.used / newest.total) * 100;
 
-  // Calculate percentage growth
-  const memoryGrowthPercent =
-    ((newestReading.used - oldestReading.used) / oldestReading.used) * 100;
-  const usagePercent = (newestReading.used / newestReading.total) * 100;
-
-  // Only log when there's significant memory activity
-  if (Math.abs(memoryGrowthPercent) > 5 || usagePercent > 60) {
-    console.debug(
-      `📈 Memory trend: ${memoryGrowthPercent.toFixed(1)}% growth, current usage: ${usagePercent.toFixed(
-        1
-      )}%`
-    );
-  }
-
-  // Check if we're seeing rapid memory growth or very high usage
-  if (memoryGrowthPercent > MEMORY_GROWTH_THRESHOLD && usagePercent > 70) {
-    console.warn(
-      `⚠️ Concerning memory pattern detected: ${memoryGrowthPercent.toFixed(
-        1
-      )}% growth with ${usagePercent.toFixed(1)}% usage`
-    );
-    return true;
-  }
-
-  // Check if we're near heap limit
-  const percentOfLimit = (newestReading.used / newestReading.limit) * 100;
-  if (percentOfLimit > 80) {
-    console.warn(`⚠️ Approaching memory limit: ${percentOfLimit.toFixed(1)}% of maximum heap used`);
-    return true;
-  }
+  if (growthPercent > MEMORY_GROWTH_THRESHOLD && usagePercent > 70) return true;
+  if ((newest.used / newest.limit) * 100 > 80) return true;
 
   return false;
 }
 
 /**
- * Start watching for heartbeats from the worker
+ * Start watching for heartbeats from the worker.
+ * FIX: only treat missing heartbeats as a problem when there are pending requests.
  */
 function startHeartbeatWatchdog() {
   console.debug("🐕 Starting heartbeat watchdog");
+  console.log("✅ MAX_HEARTBEAT_SILENCE =", MAX_HEARTBEAT_SILENCE);
 
-  // Clear any existing watchdog
-  if (heartbeatWatchdog) {
-    clearInterval(heartbeatWatchdog);
-  }
+  if (heartbeatWatchdog) clearInterval(heartbeatWatchdog);
 
   lastHeartbeatTime = Date.now();
-  memoryReadings = []; // Reset memory readings
+  memoryReadings = [];
 
-  // Set up the watchdog timer
   heartbeatWatchdog = setInterval(() => {
-    const timeSinceLastHeartbeat = Date.now() - lastHeartbeatTime;
-
-    // Only log if it's been a while since the last heartbeat
-    if (timeSinceLastHeartbeat > 2000) {
-      console.debug(`❗ Heartbeat check: ${timeSinceLastHeartbeat}ms since last heartbeat`);
+    // ✅ If we have no pending requests, the worker can be quiet.
+    if (callbacks.size === 0) {
+      lastHeartbeatTime = Date.now();
+      return;
     }
 
-    // Check memory usage patterns
+    const timeSince = Date.now() - lastHeartbeatTime;
     const memoryConcern = trackMemoryUsage();
 
-    // If we haven't received a heartbeat in too long or memory pattern is concerning, assume issues
-    if (timeSinceLastHeartbeat > MAX_HEARTBEAT_SILENCE || memoryConcern) {
-      if (timeSinceLastHeartbeat > MAX_HEARTBEAT_SILENCE) {
-        console.warn(`⚠️ Worker hasn't sent a heartbeat in ${timeSinceLastHeartbeat}ms, resetting...`);
-      } else if (memoryConcern) {
-        console.warn(`⚠️ Resetting worker due to concerning memory usage pattern`);
-      }
+    if (timeSince > MAX_HEARTBEAT_SILENCE || memoryConcern) {
+      console.warn(
+        timeSince > MAX_HEARTBEAT_SILENCE
+          ? `⚠️ No heartbeat for ${timeSince}ms during an active request, resetting...`
+          : `⚠️ Resetting worker due to concerning memory usage pattern`
+      );
 
-      // Get all pending callbacks before resetting
       const pendingCallbacks = new Map(callbacks);
-
-      // Reset the worker
       resetWorker();
-
-      // Process all pending callbacks
       processPendingCallbacks(pendingCallbacks);
     }
   }, HEARTBEAT_CHECK_INTERVAL);
@@ -410,16 +275,11 @@ function startHeartbeatWatchdog() {
 function initWorker() {
   if (worker) return;
 
-  // Create the worker
   worker = new Worker(new URL("./ries.worker.js", import.meta.url));
   setupWorkerHandlers();
   startHeartbeatWatchdog();
 }
 
-/**
- * Manually restart the RIES module
- * @returns {Promise} Promise that resolves when the module has been restarted
- */
 export function restartRiesModule() {
   initWorker();
 
@@ -431,21 +291,14 @@ export function restartRiesModule() {
 }
 
 /**
- * Send a calculation request to the RIES worker
- * @param {string} targetValue - The value to find equations for
- * @param {Object} options - Options to pass to RIES
- * @returns {Promise} - Promise that resolves with the calculation results
+ * Send a calculation request to the worker
  */
 export function sendRiesRequest(targetValue, options = {}) {
   initWorker();
 
-  // Merge caller options with your defaults (caller can override)
-  const mergedOptions = { ...DEFAULT_RIES_OPTIONS, ...(options || {}) };
-
-  // Build args from merged options
+  const mergedOptions = { ...DEFAULT_RIES_OPTIONS, ...normalizeOptions(options) };
   const args = buildArgs(mergedOptions);
 
-  // DEBUG: prove what we're sending to RIES
   console.log("✅ mergedOptions:", mergedOptions);
   console.log("✅ RIES args being sent:", args);
 
@@ -454,16 +307,11 @@ export function sendRiesRequest(targetValue, options = {}) {
     callbacks.set(id, {
       resolve,
       reject,
-      targetValue, // Store the target value so we can retry if needed
-      hasRetried: false, // Track if we've already retried this request
-      options: mergedOptions, // Store merged options for retry
+      targetValue,
+      hasRetried: false,
+      options: mergedOptions,
     });
 
-    // Pass both the target value and arguments to the worker
-    worker.postMessage({
-      id,
-      targetValue,
-      args,
-    });
+    worker.postMessage({ id, targetValue, args });
   });
 }
