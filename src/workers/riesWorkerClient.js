@@ -1,5 +1,6 @@
 // src/workers/riesWorkerClient.js
-console.log("✅ riesWorkerClient loaded (my restricted solver)");
+console.log("✅✅✅ USING UPDATED riesWorkerClient.js FILE");
+
 
 // ======================
 // Defaults: "Your solver"
